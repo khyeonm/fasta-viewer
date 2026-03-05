@@ -1,6 +1,6 @@
 {
   "name": "fasta-viewer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Sequence viewer with colored nucleotides, sequence statistics, and GC content calculation",
   "extensions": [
     "fasta",
