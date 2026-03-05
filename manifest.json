@@ -1,0 +1,11 @@
+{
+  "name": "fasta-viewer",
+  "version": "1.0.0",
+  "description": "Sequence viewer with colored nucleotides, sequence statistics, and GC content calculation",
+  "extensions": [
+    "fasta",
+    "fa"
+  ],
+  "entry": "index.js",
+  "style": "style.css"
+}
