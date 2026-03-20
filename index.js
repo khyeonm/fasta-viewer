@@ -281,6 +281,7 @@
   }
 
   function _renderData(container, fileUrl, filename) {
+    container.innerHTML = '<div class="ap-loading">Loading...</div>';
     allSeqs = []; filteredSeqs = []; currentPage = 0; filterText = ''; expandedIdx = {};
     _currentFilename = filename;
 
@@ -334,6 +335,7 @@
   window.AutoPipePlugin = {
     render: function(container, fileUrl, filename) {
       rootEl = container;
+      rootEl.innerHTML = '<div class="ap-loading">Loading...</div>';
       _igvMode = 'data';
       _selectedGenome = null;
 
