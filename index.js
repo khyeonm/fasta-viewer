@@ -80,8 +80,37 @@
     currentPage = 0;
   }
 
+  function _loadPage(page) {
+    var target = (rootEl && rootEl.querySelector('#__plugin_content__')) || rootEl;
+    if (!target) return;
+
+    _fetchPage(_currentFilename, page).then(function(data) {
+      if (data.error) {
+        target.innerHTML = '<p style="color:red;padding:16px;">Error: ' + data.error + '</p>';
+        return;
+      }
+      _totalSeqs = data.total || _totalSeqs;
+      currentPage = page;
+      var text = '';
+      if (data.rows) {
+        for (var i = 0; i < data.rows.length; i++) {
+          var row = data.rows[i];
+          text += (Array.isArray(row) ? row.join('\t') : row) + '\n';
+        }
+      }
+      allSeqs = parse(text);
+      filteredSeqs = [];
+      for (var i = 0; i < allSeqs.length; i++) {
+        filteredSeqs.push({ idx: i, data: allSeqs[i] });
+      }
+      expandedIdx = {};
+      render();
+    }).catch(function(err) {
+      target.innerHTML = '<p style="color:red;padding:16px;">Error: ' + err.message + '</p>';
+    });
+  }
+
   function render() {
-    // Target the #__plugin_content__ div if it exists (tab mode), else rootEl
     var target = (rootEl && rootEl.querySelector('#__plugin_content__')) || rootEl;
     if (!target) return;
     var seqType = detectType(allSeqs);
@@ -93,34 +122,23 @@
     }
     var avgGC = totalBases > 0 ? (totalGC / totalBases * 100).toFixed(1) : '0.0';
 
-    var totalPages = Math.max(1, Math.ceil(filteredSeqs.length / PAGE_SIZE));
-    if (currentPage >= totalPages) currentPage = totalPages - 1;
-    var startIdx = currentPage * PAGE_SIZE;
-    var pageSeqs = filteredSeqs.slice(startIdx, startIdx + PAGE_SIZE);
+    var totalPages = Math.max(1, Math.ceil(_totalSeqs / PAGE_SIZE));
 
     var html = '<div class="fasta-plugin">';
 
     // Summary
     html += '<div class="fasta-summary">';
-    html += '<span class="stat"><b>' + formatNum(allSeqs.length) + '</b> sequences</span>';
-    html += '<span class="stat"><b>' + formatNum(totalBases) + '</b> total bases</span>';
+    html += '<span class="stat"><b>' + formatNum(_totalSeqs) + '</b> sequences</span>';
+    html += '<span class="stat"><b>' + formatNum(totalBases) + '</b> bases (this page)</span>';
     html += '<span class="stat">Type: <b>' + seqType + '</b></span>';
     if (seqType !== 'Protein') html += '<span class="stat">Avg GC: <b>' + avgGC + '%</b></span>';
-    if (filteredSeqs.length !== allSeqs.length) {
-      html += '<span class="stat" style="color:#c62828">(' + (allSeqs.length - filteredSeqs.length) + ' filtered out)</span>';
-    }
-    html += '</div>';
-
-    // Controls
-    html += '<div class="fasta-controls">';
-    html += '<input type="text" id="fastaFilter" placeholder="Search sequence headers..." value="' + filterText.replace(/"/g, '&quot;') + '">';
     html += '</div>';
 
     // Sequence list
     html += '<div class="fasta-list">';
-    for (var si = 0; si < pageSeqs.length; si++) {
-      var entry = pageSeqs[si];
-      var globalIdx = entry.idx;
+    for (var si = 0; si < filteredSeqs.length; si++) {
+      var entry = filteredSeqs[si];
+      var globalIdx = currentPage * PAGE_SIZE + entry.idx;
       var seq = entry.data;
       var isOpen = !!expandedIdx[globalIdx];
 
@@ -143,7 +161,7 @@
     // Pagination
     if (totalPages > 1) {
       html += '<div class="fasta-pagination">';
-      html += '<button data-page="prev">&laquo; Prev</button>';
+      html += '<button data-page="prev"' + (currentPage <= 0 ? ' disabled' : '') + '>&laquo; Prev</button>';
       var startP = Math.max(0, currentPage - 3);
       var endP = Math.min(totalPages, startP + 7);
       if (startP > 0) html += '<button data-page="0">1</button><span>...</span>';
@@ -151,8 +169,9 @@
         html += '<button data-page="' + p + '"' + (p === currentPage ? ' class="current"' : '') + '>' + (p + 1) + '</button>';
       }
       if (endP < totalPages) html += '<span>...</span><button data-page="' + (totalPages - 1) + '">' + totalPages + '</button>';
-      html += '<button data-page="next">Next &raquo;</button>';
-      html += '<span class="page-info">Page ' + (currentPage + 1) + ' of ' + totalPages + '</span>';
+      html += '<button data-page="next"' + (currentPage >= totalPages - 1 ? ' disabled' : '') + '>Next &raquo;</button>';
+      html += '<span class="page-info">Page ' + (currentPage + 1) + ' of ' + totalPages +
+        ' (' + formatNum(_totalSeqs) + ' sequences)</span>';
       html += '</div>';
     }
 
@@ -160,8 +179,6 @@
     target.innerHTML = html;
 
     // Events
-    var fi = target.querySelector('#fastaFilter');
-    if (fi) fi.addEventListener('input', function() { filterText = this.value; applyFilter(); render(); });
     var hdrs = target.querySelectorAll('.fasta-header');
     for (var i = 0; i < hdrs.length; i++) {
       hdrs[i].addEventListener('click', function() {
@@ -174,10 +191,9 @@
     for (var i = 0; i < pbs.length; i++) {
       pbs[i].addEventListener('click', function() {
         var pg = this.getAttribute('data-page');
-        if (pg === 'prev') { if (currentPage > 0) currentPage--; }
-        else if (pg === 'next') { var tp = Math.ceil(filteredSeqs.length / PAGE_SIZE); if (currentPage < tp - 1) currentPage++; }
-        else { currentPage = parseInt(pg, 10); }
-        render();
+        if (pg === 'prev') { if (currentPage > 0) _loadPage(currentPage - 1); }
+        else if (pg === 'next') { if (currentPage < totalPages - 1) _loadPage(currentPage + 1); }
+        else { _loadPage(parseInt(pg, 10)); }
       });
     }
   }
@@ -233,7 +249,7 @@
   }
 
   function _renderIgv(container, fileUrl, filename, trackType, trackFormat) {
-    container.innerHTML = '<div id="__igv_div__">Loading IGV.js...</div>';
+    container.innerHTML = '<div id="__igv_div__" class="ap-loading">Loading...</div>';
     _loadIgvJs().then(function() {
       var div = document.getElementById('__igv_div__');
       if (!div) return;
@@ -256,20 +272,38 @@
   var TRACK_TYPE = 'sequence';
   var TRACK_FORMAT = 'fasta';
 
-  function _renderData(container, fileUrl, filename) {
-    container.innerHTML = '<div class="fasta-loading">Loading ' + filename + '...</div>';
-    allSeqs = []; filteredSeqs = []; currentPage = 0; filterText = ''; expandedIdx = {};
+  var _totalSeqs = 0;
+  var _currentFilename = '';
 
-    fetch(fileUrl)
-      .then(function(resp) { return resp.text(); })
-      .then(function(data) {
-        allSeqs = parse(data);
-        applyFilter();
-        render();
-      })
-      .catch(function(err) {
-        container.innerHTML = '<p style="color:red;padding:16px;">Error loading file: ' + err.message + '</p>';
-      });
+  function _fetchPage(filename, page) {
+    return fetch('/data/' + encodeURIComponent(filename) + '?page=' + page + '&page_size=' + PAGE_SIZE)
+      .then(function(resp) { return resp.json(); });
+  }
+
+  function _renderData(container, fileUrl, filename) {
+    allSeqs = []; filteredSeqs = []; currentPage = 0; filterText = ''; expandedIdx = {};
+    _currentFilename = filename;
+
+    _fetchPage(filename, 0).then(function(data) {
+      if (data.error) {
+        container.innerHTML = '<p style="color:red;padding:16px;">Error: ' + data.error + '</p>';
+        return;
+      }
+      _totalSeqs = data.total || 0;
+      // rows come as arrays of tab-separated fields; join lines and parse as fasta
+      var text = '';
+      if (data.rows) {
+        for (var i = 0; i < data.rows.length; i++) {
+          var row = data.rows[i];
+          text += (Array.isArray(row) ? row.join('\t') : row) + '\n';
+        }
+      }
+      allSeqs = parse(text);
+      applyFilter();
+      render();
+    }).catch(function(err) {
+      container.innerHTML = '<p style="color:red;padding:16px;">Error loading file: ' + err.message + '</p>';
+    });
   }
 
   function _showView(container, fileUrl, filename) {
