@@ -291,15 +291,24 @@
       .catch(function() { _igvRef = null; });
   }
 
+  // igv.js ships inside the plugin so the viewer works on machines with no
+  // internet access. The CDN stays as a fallback for installs that predate the
+  // bundled copy.
+  var IGV_LOCAL = '/plugin/fasta-viewer/igv.min.js';
+  var IGV_CDN = 'https://cdn.jsdelivr.net/npm/igv@3/dist/igv.min.js';
+
   function _loadIgvJs() {
-    return new Promise(function(resolve, reject) {
-      if (window.igv) { resolve(); return; }
-      var s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/igv@3/dist/igv.min.js';
-      s.onload = function() { resolve(); };
-      s.onerror = function() { reject(new Error('Failed to load igv.js')); };
-      document.head.appendChild(s);
-    });
+    if (window.igv) return Promise.resolve();
+    function load(src) {
+      return new Promise(function(resolve, reject) {
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = function() { resolve(); };
+        s.onerror = function() { reject(new Error('Failed to load ' + src)); };
+        document.head.appendChild(s);
+      });
+    }
+    return load(IGV_LOCAL).catch(function() { return load(IGV_CDN); });
   }
 
   function _buildGenomeDropdown() {
