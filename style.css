@@ -87,6 +87,14 @@
   background: #fafafa;
 }
 
+.fasta-cont {
+  display: inline-block;
+  margin-top: 6px;
+  color: #888;
+  font-style: italic;
+  font-family: system-ui, sans-serif;
+}
+
 .base-A { color: #2e7d32; font-weight: 600; }
 .base-T { color: #c62828; font-weight: 600; }
 .base-U { color: #c62828; font-weight: 600; }

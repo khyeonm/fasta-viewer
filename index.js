@@ -72,7 +72,11 @@
 })();
 
 
-  var PAGE_SIZE = 50;
+  // Lines per page. FASTA is streamed by LINE, not by record, so a single
+  // huge contig (a chromosome) is spread over many pages instead of being
+  // pulled into memory whole. A page holds either many short sequences or a
+  // slice of one long one.
+  var PAGE_SIZE = 400;
   var allSeqs = [];
   var filteredSeqs = [];
   var currentPage = 0;
@@ -80,17 +84,21 @@
   var expandedIdx = {};
   var rootEl = null;
 
-  function parse(text) {
+  // Parse one page's worth of lines into sequence fragments. If the first data
+  // line is not a ">" header, this page begins in the MIDDLE of a sequence that
+  // started on an earlier page — that fragment is flagged `continued` so the UI
+  // can label it. `header` is null for such a lead-in fragment.
+  function parsePage(lines) {
     var seqs = [];
-    var lines = text.split('\n');
     var cur = null;
     for (var i = 0; i < lines.length; i++) {
-      var l = lines[i].trim();
+      var l = String(lines[i]).trim();
       if (!l) continue;
       if (l[0] === '>') {
         if (cur) seqs.push(cur);
-        cur = { header: l.substring(1).trim(), seq: '' };
-      } else if (cur) {
+        cur = { header: l.substring(1).trim(), seq: '', continued: false };
+      } else {
+        if (!cur) cur = { header: null, seq: '', continued: true };
         cur.seq += l.toUpperCase();
       }
     }
@@ -125,7 +133,8 @@
   function formatNum(n) { return n.toLocaleString(); }
 
   function colorBases(seq, maxLen) {
-    var s = seq.substring(0, maxLen || 500);
+    // A page caps how much sequence lands here, so render the whole fragment.
+    var s = maxLen ? seq.substring(0, maxLen) : seq;
     var html = '';
     for (var i = 0; i < s.length; i++) {
       var ch = s[i];
@@ -135,7 +144,6 @@
         html += ch;
       }
     }
-    if (seq.length > (maxLen || 500)) html += '<span style="color:#999">... (' + formatNum(seq.length - (maxLen || 500)) + ' more)</span>';
     return html;
   }
 
@@ -143,11 +151,11 @@
     var ft = filterText.toLowerCase();
     filteredSeqs = [];
     for (var i = 0; i < allSeqs.length; i++) {
-      if (!ft || allSeqs[i].header.toLowerCase().indexOf(ft) >= 0) {
+      var hdr = allSeqs[i].header || '';
+      if (!ft || hdr.toLowerCase().indexOf(ft) >= 0) {
         filteredSeqs.push({ idx: i, data: allSeqs[i] });
       }
     }
-    currentPage = 0;
   }
 
   function _loadPage(page) {
@@ -159,21 +167,18 @@
         target.innerHTML = '<p style="color:red;padding:16px;">Error: ' + data.error + '</p>';
         return;
       }
-      _totalSeqs = data.total || _totalSeqs;
+      _totalLines = data.total || _totalLines;
       currentPage = page;
-      var text = '';
+      var lines = [];
       if (data.rows) {
         for (var i = 0; i < data.rows.length; i++) {
           var row = data.rows[i];
-          text += (Array.isArray(row) ? row.join('\t') : row) + '\n';
+          lines.push(Array.isArray(row) ? row.join('\t') : row);
         }
       }
-      allSeqs = parse(text);
-      filteredSeqs = [];
-      for (var i = 0; i < allSeqs.length; i++) {
-        filteredSeqs.push({ idx: i, data: allSeqs[i] });
-      }
+      allSeqs = parsePage(lines);
       expandedIdx = {};
+      applyFilter();
       render();
     }).catch(function(err) {
       target.innerHTML = '<p style="color:red;padding:16px;">Error: ' + err.message + '</p>';
@@ -192,13 +197,18 @@
     }
     var avgGC = totalBases > 0 ? (totalGC / totalBases * 100).toFixed(1) : '0.0';
 
-    var totalPages = Math.max(1, Math.ceil(_totalSeqs / PAGE_SIZE));
+    var totalPages = Math.max(1, Math.ceil(_totalLines / PAGE_SIZE));
+    var lastPage = currentPage >= totalPages - 1;
+
+    // How many real records (">" headers) start on this page.
+    var recCount = 0;
+    for (var i = 0; i < allSeqs.length; i++) { if (!allSeqs[i].continued) recCount++; }
 
     var html = '<div class="fasta-plugin">';
 
-    // Summary
+    // Summary \u2014 per page, since a sequential stream has no whole-file totals.
     html += '<div class="fasta-summary">';
-    html += '<span class="stat"><b>' + formatNum(_totalSeqs) + '</b> sequences</span>';
+    html += '<span class="stat"><b>' + formatNum(recCount) + '</b> sequences (this page)</span>';
     html += '<span class="stat"><b>' + formatNum(totalBases) + '</b> bases (this page)</span>';
     html += '<span class="stat">Type: <b>' + seqType + '</b></span>';
     if (seqType !== 'Protein') html += '<span class="stat">Avg GC: <b>' + avgGC + '%</b></span>';
@@ -208,21 +218,33 @@
     html += '<div class="fasta-list">';
     for (var si = 0; si < filteredSeqs.length; si++) {
       var entry = filteredSeqs[si];
-      var globalIdx = currentPage * PAGE_SIZE + entry.idx;
+      var globalIdx = entry.idx;
       var seq = entry.data;
-      var isOpen = !!expandedIdx[globalIdx];
+      // A lead-in fragment (continued from the previous page) and a lone
+      // sequence open by default; multiple short records stay collapsed.
+      var autoOpen = seq.continued || filteredSeqs.length === 1;
+      var isOpen = (globalIdx in expandedIdx) ? expandedIdx[globalIdx] : autoOpen;
+      // The last fragment on a non-final page runs on into the next page.
+      var isLast = si === filteredSeqs.length - 1;
+      var runsOn = isLast && !lastPage && !filterText;
 
       html += '<div class="fasta-entry">';
-      html += '<div class="fasta-header" data-idx="' + globalIdx + '">';
-      html += '<span class="fasta-header-name">' + (isOpen ? '\u25BC ' : '\u25B6 ') + seq.header + '</span>';
+      html += '<div class="fasta-header" data-idx="' + globalIdx + '" data-auto="' + (autoOpen ? '1' : '0') + '">';
+      var name = seq.continued
+        ? '\u21B3 (continued from previous page)'
+        : _escapeHtml(seq.header || '(unnamed)');
+      html += '<span class="fasta-header-name">' + (isOpen ? '\u25BC ' : '\u25B6 ') + name + '</span>';
       html += '<span class="fasta-header-meta">';
-      html += '<span>' + formatNum(seq.seq.length) + ' bp</span>';
+      html += '<span>' + formatNum(seq.seq.length) + ' bp' +
+        ((seq.continued || runsOn) ? ' (partial)' : '') + '</span>';
       if (seqType !== 'Protein') html += '<span class="gc-badge">GC ' + gcContent(seq.seq) + '%</span>';
       html += '</span>';
       html += '</div>';
 
       if (isOpen) {
-        html += '<div class="fasta-seq">' + colorBases(seq.seq, 2000) + '</div>';
+        html += '<div class="fasta-seq">' + colorBases(seq.seq) +
+          (runsOn ? '<span class="fasta-cont">\u2026 continues on next page</span>' : '') +
+          '</div>';
       }
       html += '</div>';
     }
@@ -240,8 +262,7 @@
       }
       if (endP < totalPages) html += '<span>...</span><button data-page="' + (totalPages - 1) + '">' + totalPages + '</button>';
       html += '<button data-page="next"' + (currentPage >= totalPages - 1 ? ' disabled' : '') + '>Next &raquo;</button>';
-      html += '<span class="page-info">Page ' + (currentPage + 1) + ' of ' + totalPages +
-        ' (' + formatNum(_totalSeqs) + ' sequences)</span>';
+      html += '<span class="page-info">Page ' + (currentPage + 1) + ' of ' + totalPages + '</span>';
       html += '</div>';
     }
 
@@ -253,7 +274,9 @@
     for (var i = 0; i < hdrs.length; i++) {
       hdrs[i].addEventListener('click', function() {
         var idx = parseInt(this.getAttribute('data-idx'), 10);
-        expandedIdx[idx] = !expandedIdx[idx];
+        var auto = this.getAttribute('data-auto') === '1';
+        var cur = (idx in expandedIdx) ? expandedIdx[idx] : auto;
+        expandedIdx[idx] = !cur;
         render();
       });
     }
@@ -451,7 +474,7 @@
   var TRACK_TYPE = 'sequence';
   var TRACK_FORMAT = 'fasta';
 
-  var _totalSeqs = 0;
+  var _totalLines = 0;
   var _currentFilename = '';
 
   function _isGz(name) { return /\.gz$/i.test(name); }
@@ -481,30 +504,39 @@
       ? _savedFileUrl : ('/file/' + encodeURIComponent(filename));
   }
 
-  // Pages by line; 1 line(s) per record. Sequential only: reopen from the
-  // top unless paging forward from the current cursor.
+  // Page by LINE so a huge single contig streams across pages instead of being
+  // read whole. Matches the server's sed-based line paging, so gz and plain
+  // files break at the same boundaries. Sequential only: reopen from the top
+  // unless paging forward from the current cursor.
   function _fetchPageGz(filename, page) {
-    var LINES = PAGE_SIZE * 1;
-    var reuse = _gzCur && _gzCur.name === filename && _gzCur.page === page - 1;
+    var reuse = _gzCur && _gzCur.name === filename && _gzCur.page === page - 1 && !_gzCur.eof;
     if (!reuse) {
       if (_gzCur && _gzCur.rd) _gzCur.rd.cancel();
-      _gzCur = { name: filename, page: -1, rd: window.AutoPipeGz.lineReader(_gzFileUrl(filename)) };
-      var skip = page * LINES;
+      _gzCur = { name: filename, page: -1, eof: false,
+                 rd: window.AutoPipeGz.lineReader(_gzFileUrl(filename)) };
+      var skip = page * PAGE_SIZE;
       var doSkip = function() {
         if (skip <= 0) return Promise.resolve();
-        return _gzCur.rd.readLines(Math.min(skip, LINES)).then(function(ls) {
-          if (!ls.length) return; skip -= ls.length; return doSkip();
+        return _gzCur.rd.readLines(Math.min(skip, PAGE_SIZE)).then(function(ls) {
+          if (!ls.length) { _gzCur.eof = true; return; }
+          skip -= ls.length;
+          return doSkip();
         });
       };
-      return doSkip().then(function() { return _gzTake(page, LINES); });
+      return doSkip().then(function() { return _gzTake(page); });
     }
-    return _gzTake(page, LINES);
+    return _gzTake(page);
   }
 
-  function _gzTake(page, LINES) {
-    return _gzCur.rd.readLines(LINES).then(function(lines) {
+  function _gzTake(page) {
+    return _gzCur.rd.readLines(PAGE_SIZE).then(function(lines) {
       _gzCur.page = page;
-      return { rows: lines, total: page * PAGE_SIZE + lines.length, page: page, page_size: PAGE_SIZE };
+      if (lines.length < PAGE_SIZE) _gzCur.eof = true;
+      // Sequential stream: true line count is unknown until EOF. Report lines
+      // seen plus one more page's worth while data remains, so "Next" stays live.
+      var hasMore = !_gzCur.eof;
+      var total = page * PAGE_SIZE + lines.length + (hasMore ? 1 : 0);
+      return { rows: lines, total: total, page: page, page_size: PAGE_SIZE };
     });
   }
 
@@ -518,16 +550,15 @@
         container.innerHTML = '<p style="color:red;padding:16px;">Error: ' + data.error + '</p>';
         return;
       }
-      _totalSeqs = data.total || 0;
-      // rows come as arrays of tab-separated fields; join lines and parse as fasta
-      var text = '';
+      _totalLines = data.total || 0;
+      var lines = [];
       if (data.rows) {
         for (var i = 0; i < data.rows.length; i++) {
           var row = data.rows[i];
-          text += (Array.isArray(row) ? row.join('\t') : row) + '\n';
+          lines.push(Array.isArray(row) ? row.join('\t') : row);
         }
       }
-      allSeqs = parse(text);
+      allSeqs = parsePage(lines);
       applyFilter();
       render();
     }).catch(function(err) {

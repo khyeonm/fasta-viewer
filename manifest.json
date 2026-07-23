@@ -1,6 +1,6 @@
 {
   "name": "fasta-viewer",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Sequence viewer with colored nucleotides, sequence statistics, and GC content calculation",
   "extensions": [
     "fasta",
@@ -12,9 +12,9 @@
   "style": "style.css",
   "data_source": {
     "type": "text",
-    "row_count": "grep -c '^>' '{file}'",
+    "row_count": "wc -l < '{file}'",
     "metadata": "head -1 '{file}'",
-    "rows": "awk 'BEGIN{{n=0}} /^>/{{n++; if(n>={end})exit; if(n>={start})print}} !/^>/{{if(n>={start} && n<{end})print}}' '{file}'",
+    "rows": "sed -n '{start},{end}p' '{file}'",
     "col_headers": [],
     "meta_parse": "none",
     "allow_nonzero_exit": false,
@@ -22,9 +22,9 @@
       {
         "type": "docker",
         "image": "ubuntu:22.04",
-        "row_count": "grep -c '^>' '{file}'",
+        "row_count": "wc -l < '{file}'",
         "metadata": "head -1 '{file}'",
-        "rows": "awk 'BEGIN{{n=0}} /^>/{{n++; if(n>={end})exit; if(n>={start})print}} !/^>/{{if(n>={start} && n<{end})print}}' '{file}'",
+        "rows": "sed -n '{start},{end}p' '{file}'",
         "col_headers": [],
         "meta_parse": "none",
         "allow_nonzero_exit": false
